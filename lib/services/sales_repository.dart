@@ -24,12 +24,12 @@ class SalesRepository {
     required this.remoteService,
   });
 
+  Stream<List<SalesModel>> watchSales() => _salesController.stream;
+
   Future<void> init() async {
     if (_initialized) return;
-    
     _prefs = await SharedPreferences.getInstance();
     _loadFromLocal();
-    _startSyncTimer();
     _initialized = true;
     AppLogger.info('Repository inicializado');
   }
@@ -56,16 +56,16 @@ class SalesRepository {
     await _prefs?.setString(_storageKey, jsonStr);
   }
 
+  void _notify() => _salesController.add(List.from(_localSales));
+
   void _startSyncTimer() {
+    _syncTimer?.cancel();
     _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
       final results = await Connectivity().checkConnectivity();
       final isConnected = results.isNotEmpty && !results.contains(ConnectivityResult.none);
-      
       if (isConnected) {
         AppLogger.info('Sync automático...');
-        _autoSync();
-      } else if (!isConnected) {
-        _wasOffline = true;
+        await _autoSync();
       }
     });
   }
@@ -76,13 +76,9 @@ class SalesRepository {
       await refreshFromRemote();
       _notify();
       onSyncComplete?.call();
-    } catch (e, st) {
-      AppLogger.warning('Auto sync falló (sin conexión)');
+    } catch (e) {
+      AppLogger.warning('Auto sync falló');
     }
-  }
-
-  void _notify() {
-    _salesController.add(List.from(_localSales));
   }
 
   List<SalesModel> getSales() => List.from(_localSales);
@@ -90,7 +86,7 @@ class SalesRepository {
   Future<void> loadInitialData() async {
     await init();
     AppLogger.info('Cargando datos iniciales');
-
+    _startSyncTimer();
     try {
       await refreshFromRemote();
       await syncPendingSales();
@@ -127,17 +123,11 @@ class SalesRepository {
       _updateSale(sale.copyWith(pendingSync: false));
       await _saveToLocal();
       _notify();
-      AppLogger.info('Venta sincronizada: ${sale.id}');
       return true;
     } catch (e) {
       AppLogger.info('Venta guardada localmente, pendiente de sync: ${sale.id}');
       return false;
     }
-  }
-
-  void _updateSale(SalesModel updated) {
-    final idx = _localSales.indexWhere((s) => s.id == updated.id);
-    if (idx >= 0) _localSales[idx] = updated;
   }
 
   Future<bool> togglePaid(SalesModel sale) async {
@@ -146,7 +136,7 @@ class SalesRepository {
     _updateSale(updated);
     await _saveToLocal();
     _notify();
-    AppLogger.info('Estado actualizado: ${sale.id}, isPaid: ${updated.isPaid}');
+    AppLogger.info('Estado actualizado: ${sale.id}');
 
     try {
       await remoteService.upsertSale(updated);
@@ -176,6 +166,11 @@ class SalesRepository {
     }
   }
 
+  void _updateSale(SalesModel updated) {
+    final idx = _localSales.indexWhere((s) => s.id == updated.id);
+    if (idx >= 0) _localSales[idx] = updated;
+  }
+
   Future<void> refreshFromRemote() async {
     AppLogger.info('Refrescando desde Firebase');
     try {
@@ -184,7 +179,6 @@ class SalesRepository {
         final idx = _localSales.indexWhere((s) => s.id == sale.id);
         if (idx >= 0) {
           final localSale = _localSales[idx];
-          // Only update if remote is newer and local is already synced
           if (!localSale.pendingSync && sale.updatedAt.isAfter(localSale.updatedAt)) {
             _localSales[idx] = sale;
           }
@@ -194,16 +188,13 @@ class SalesRepository {
       }
       await _saveToLocal();
       _notify();
-      AppLogger.info('Ventas desde Firebase: ${remoteSales.length}');
     } catch (e) {
-      AppLogger.warning('Error refrescando, usando datos locales');
+      AppLogger.warning('Error refrescando');
     }
   }
 
   Future<void> syncPendingSales() async {
-    AppLogger.info('Sincronizando pendientes');
     final pending = _localSales.where((s) => s.pendingSync).toList();
-    
     for (final sale in pending) {
       try {
         await remoteService.upsertSale(sale);
@@ -216,10 +207,6 @@ class SalesRepository {
     await _saveToLocal();
     _notify();
   }
-
-  void simulatePermissionDenied() => remoteService.simulatePermissionDeniedOnce();
-  void simulateNetworkError() => remoteService.simulateNetworkErrorOnce();
-  void simulateUnexpectedError() => remoteService.simulateUnexpectedErrorOnce();
 
   void dispose() {
     _syncTimer?.cancel();

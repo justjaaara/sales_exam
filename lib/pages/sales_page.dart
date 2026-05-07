@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../models/sales_model.dart';
@@ -176,75 +175,9 @@ class _SalesPageState extends State<SalesPage> {
     }
   }
 
-  void _runQaAction(String action, Future<void> Function() fn) async {
-    try {
-      await fn();
-      _showMessage('Acción QA: $action');
-    } catch (error, stackTrace) {
-      AppLogger.error('Error en acción QA', error: error, stackTrace: stackTrace);
-      _showMessage('Acción QA completada');
-    }
-  }
-
   void _showMessage(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
-  }
-
-  Widget _buildQaMenu() {
-    if (!kDebugMode) return const SizedBox.shrink();
-
-    return PopupMenuButton<String>(
-      tooltip: 'Herramientas QA',
-      icon: const Icon(Icons.bug_report_outlined),
-      onSelected: (value) {
-        switch (value) {
-          case 'permission_denied':
-            _runQaAction('permission denied', () async {
-              widget.repository.simulatePermissionDenied();
-              await widget.repository.addSale(
-                clientName: 'QA Test',
-                product: 'Test',
-                amount: 100,
-                saleDate: DateTime.now(),
-              );
-            });
-          case 'network_error':
-            _runQaAction('network error', () async {
-              widget.repository.simulateNetworkError();
-              await widget.repository.addSale(
-                clientName: 'QA Test',
-                product: 'Test',
-                amount: 100,
-                saleDate: DateTime.now(),
-              );
-            });
-          case 'refresh_remote':
-            _refreshFromRemote();
-          case 'sync_pending':
-            _syncPendingSales();
-        }
-      },
-      itemBuilder: (_) => const [
-        PopupMenuItem(
-          value: 'permission_denied',
-          child: Text('QA: simular permission denied'),
-        ),
-        PopupMenuItem(
-          value: 'network_error',
-          child: Text('QA: simular error de red'),
-        ),
-        PopupMenuDivider(),
-        PopupMenuItem(
-          value: 'refresh_remote',
-          child: Text('Actualizar desde Firebase'),
-        ),
-        PopupMenuItem(
-          value: 'sync_pending',
-          child: Text('Sincronizar pendientes'),
-        ),
-      ],
-    );
   }
 
   @override
@@ -282,7 +215,6 @@ class _SalesPageState extends State<SalesPage> {
             onPressed: _syncPendingSales,
             tooltip: 'Sincronizar pendientes',
           ),
-          _buildQaMenu(),
         ],
       ),
       body: Column(
@@ -301,7 +233,40 @@ class _SalesPageState extends State<SalesPage> {
                 ],
               ),
             ),
-          Expanded(child: _buildSalesList()),
+          Expanded(
+            child: StreamBuilder<List<SalesModel>>(
+              stream: widget.repository.watchSales(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const _LoadingView(message: 'Consultando base local...');
+                }
+                if (snapshot.hasError) {
+                  return _ErrorView(message: 'Error cargando ventas', onRetry: _reloadData);
+                }
+                final sales = snapshot.data ?? [];
+                if (sales.isEmpty) {
+                  return _EmptyView(
+                    message: 'Aún no hay ventas registradas',
+                    actionLabel: 'Crear primera venta',
+                    onAction: _openCreateSaleDialog,
+                  );
+                }
+                return ListView.separated(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+                  itemCount: sales.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (context, index) {
+                    final sale = sales[index];
+                    return SalesTile(
+                      sale: sale,
+                      onDelete: () => _deleteSale(sale),
+                      onTogglePaid: () => _togglePaid(sale),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
@@ -312,34 +277,8 @@ class _SalesPageState extends State<SalesPage> {
     );
   }
 
-  Widget _buildSalesList() {
-    final sales = widget.repository.getSales();
-    
-    if (sales.isEmpty && !_initialLoadComplete) {
-      return const _LoadingView(message: 'Cargando...');
-    }
-
-    if (sales.isEmpty) {
-      return _EmptyView(
-        message: 'Aún no hay ventas registradas',
-        actionLabel: 'Crear primera venta',
-        onAction: _openCreateSaleDialog,
-      );
-    }
-
-    return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-      itemCount: sales.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 8),
-      itemBuilder: (context, index) {
-        final sale = sales[index];
-        return SalesTile(
-          sale: sale,
-          onDelete: () => _deleteSale(sale),
-          onTogglePaid: () => _togglePaid(sale),
-        );
-      },
-    );
+  void _reloadData() {
+    setState(() {});
   }
 }
 
