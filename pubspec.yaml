@@ -38,6 +38,8 @@ dependencies:
   drift_flutter: ^0.2.4
   path_provider: ^2.1.5
   logger: ^2.5.0
+  connectivity_plus: ^7.1.1
+  shared_preferences: ^2.5.5
 
 dev_dependencies:
   flutter_test:

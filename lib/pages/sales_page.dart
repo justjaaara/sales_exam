@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
@@ -18,13 +21,53 @@ class SalesPage extends StatefulWidget {
 
 class _SalesPageState extends State<SalesPage> {
   bool _loadingInitialData = true;
+  bool _initialLoadComplete = false;
+  bool _isOffline = false;
   String? _initialErrorMessage;
+  Timer? _connectivityTimer;
 
   @override
   void initState() {
     super.initState();
     AppLogger.info('SalesPage abierta');
     _loadInitialData();
+    _startConnectivityMonitor();
+    widget.repository.onSyncComplete = _onRepositorySyncComplete;
+  }
+
+  void _onRepositorySyncComplete() {
+    if (mounted) {
+      setState(() {});
+      _showMessage('Sincronizado con Firebase');
+    }
+  }
+
+  void _startConnectivityMonitor() {
+    _connectivityTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      final results = await Connectivity().checkConnectivity();
+      final wasOffline = _isOffline;
+      _isOffline = results.isEmpty || results.contains(ConnectivityResult.none);
+      
+      if (wasOffline && !_isOffline) {
+        if (mounted) {
+          AppLogger.info('Conexión restaurada');
+          _showMessage('Conexión restaurada');
+          setState(() {});
+        }
+      } else if (!wasOffline && _isOffline) {
+        if (mounted) {
+          AppLogger.info('Sin conexión');
+          _showMessage('Sin conexión');
+          setState(() {});
+        }
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _connectivityTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadInitialData() async {
@@ -35,6 +78,7 @@ class _SalesPageState extends State<SalesPage> {
 
     try {
       await widget.repository.loadInitialData();
+      _initialLoadComplete = true;
       AppLogger.info('Datos cargados');
     } catch (error, stackTrace) {
       AppLogger.error('Error cargando datos', error: error, stackTrace: stackTrace);
@@ -61,32 +105,59 @@ class _SalesPageState extends State<SalesPage> {
 
   Future<void> _createSale(SalesFormResult result) async {
     try {
-      await widget.repository.addSale(
+      final wasSynced = await widget.repository.addSale(
         clientName: result.clientName,
         product: result.product,
         amount: result.amount,
         saleDate: result.saleDate,
       );
-      _showMessage('Venta creada correctamente');
+      setState(() {});
+      if (wasSynced) {
+        _showMessage('Venta creada y sincronizada');
+      } else {
+        _showMessage('Venta creada localmente (pendiente de sync)');
+      }
     } catch (error, stackTrace) {
       AppLogger.error('Error creando venta', error: error, stackTrace: stackTrace);
-      _showMessage('No se pudo crear la venta');
+      _showMessage('Error al crear venta');
     }
   }
 
   Future<void> _deleteSale(SalesModel sale) async {
     try {
-      await widget.repository.deleteSale(sale);
-      _showMessage('Venta eliminada');
+      final wasSynced = await widget.repository.deleteSale(sale);
+      setState(() {});
+      if (wasSynced) {
+        _showMessage('Venta eliminada');
+      } else {
+        _showMessage('Venta eliminada localmente (pendiente de sync)');
+      }
     } catch (error, stackTrace) {
       AppLogger.error('Error eliminando venta', error: error, stackTrace: stackTrace);
-      _showMessage('No se pudo eliminar la venta');
+      _showMessage('Error al eliminar venta');
+    }
+  }
+
+  Future<void> _togglePaid(SalesModel sale) async {
+    try {
+      final wasSynced = await widget.repository.togglePaid(sale);
+      setState(() {});
+      final newIsPaid = !sale.isPaid;
+      if (wasSynced) {
+        _showMessage(newIsPaid ? 'Marcado como cobrado' : 'Marcado como pendiente');
+      } else {
+        _showMessage(newIsPaid ? 'Cobrado localmente (pendiente sync)' : 'Cambiado localmente (pendiente sync)');
+      }
+    } catch (error, stackTrace) {
+      AppLogger.error('Error actualizando estado', error: error, stackTrace: stackTrace);
+      _showMessage('Error al actualizar');
     }
   }
 
   Future<void> _refreshFromRemote() async {
     try {
       await widget.repository.refreshFromRemote();
+      setState(() {});
       _showMessage('Datos actualizados');
     } catch (error, stackTrace) {
       AppLogger.error('Error actualizando', error: error, stackTrace: stackTrace);
@@ -97,6 +168,7 @@ class _SalesPageState extends State<SalesPage> {
   Future<void> _syncPendingSales() async {
     try {
       await widget.repository.syncPendingSales();
+      setState(() {});
       _showMessage('Sincronización completada');
     } catch (error, stackTrace) {
       AppLogger.error('Error sincronizando', error: error, stackTrace: stackTrace);
@@ -130,12 +202,22 @@ class _SalesPageState extends State<SalesPage> {
           case 'permission_denied':
             _runQaAction('permission denied', () async {
               widget.repository.simulatePermissionDenied();
-              await widget.repository.addSale(clientName: 'QA Test', product: 'Test', amount: 100, saleDate: DateTime.now());
+              await widget.repository.addSale(
+                clientName: 'QA Test',
+                product: 'Test',
+                amount: 100,
+                saleDate: DateTime.now(),
+              );
             });
           case 'network_error':
             _runQaAction('network error', () async {
               widget.repository.simulateNetworkError();
-              await widget.repository.addSale(clientName: 'QA Test', product: 'Test', amount: 100, saleDate: DateTime.now());
+              await widget.repository.addSale(
+                clientName: 'QA Test',
+                product: 'Test',
+                amount: 100,
+                saleDate: DateTime.now(),
+              );
             });
           case 'refresh_remote':
             _refreshFromRemote();
@@ -144,11 +226,23 @@ class _SalesPageState extends State<SalesPage> {
         }
       },
       itemBuilder: (_) => const [
-        PopupMenuItem(value: 'permission_denied', child: Text('QA: simular permission denied')),
-        PopupMenuItem(value: 'network_error', child: Text('QA: simular error de red')),
+        PopupMenuItem(
+          value: 'permission_denied',
+          child: Text('QA: simular permission denied'),
+        ),
+        PopupMenuItem(
+          value: 'network_error',
+          child: Text('QA: simular error de red'),
+        ),
         PopupMenuDivider(),
-        PopupMenuItem(value: 'refresh_remote', child: Text('Actualizar desde Firebase')),
-        PopupMenuItem(value: 'sync_pending', child: Text('Sincronizar pendientes')),
+        PopupMenuItem(
+          value: 'refresh_remote',
+          child: Text('Actualizar desde Firebase'),
+        ),
+        PopupMenuItem(
+          value: 'sync_pending',
+          child: Text('Sincronizar pendientes'),
+        ),
       ],
     );
   }
@@ -173,6 +267,11 @@ class _SalesPageState extends State<SalesPage> {
       appBar: AppBar(
         title: const Text('Registro de Ventas'),
         actions: [
+          if (_isOffline) 
+            const Padding(
+              padding: EdgeInsets.only(right: 8),
+              child: Icon(Icons.cloud_off, color: Colors.orange, size: 20),
+            ),
           IconButton(
             icon: const Icon(Icons.cloud_download_outlined),
             onPressed: _refreshFromRemote,
@@ -186,44 +285,60 @@ class _SalesPageState extends State<SalesPage> {
           _buildQaMenu(),
         ],
       ),
+      body: Column(
+        children: [
+          if (_isOffline)
+            Container(
+              width: double.infinity,
+              color: Colors.orange.shade100,
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.wifi_off, size: 16, color: Colors.orange),
+                  SizedBox(width: 8),
+                  Text('Sin conexión - Los cambios se sincronizarán al reconectar', style: TextStyle(fontSize: 13)),
+                ],
+              ),
+            ),
+          Expanded(child: _buildSalesList()),
+        ],
+      ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _openCreateSaleDialog,
         icon: const Icon(Icons.add),
         label: const Text('Nueva Venta'),
       ),
-      body: StreamBuilder<List<SalesModel>>(
-        stream: widget.repository.watchSales(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const _LoadingView(message: 'Consultando base local...');
-          }
+    );
+  }
 
-          if (snapshot.hasError) {
-            AppLogger.error('Error en StreamBuilder', error: snapshot.error, stackTrace: snapshot.stackTrace);
-            return _ErrorView(message: 'Error al cargar ventas', onRetry: _loadInitialData);
-          }
+  Widget _buildSalesList() {
+    final sales = widget.repository.getSales();
+    
+    if (sales.isEmpty && !_initialLoadComplete) {
+      return const _LoadingView(message: 'Cargando...');
+    }
 
-          final sales = snapshot.data ?? [];
+    if (sales.isEmpty) {
+      return _EmptyView(
+        message: 'Aún no hay ventas registradas',
+        actionLabel: 'Crear primera venta',
+        onAction: _openCreateSaleDialog,
+      );
+    }
 
-          if (sales.isEmpty) {
-            return _EmptyView(
-              message: 'Aún no hay ventas registradas',
-              actionLabel: 'Crear primera venta',
-              onAction: _openCreateSaleDialog,
-            );
-          }
-
-          return ListView.separated(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-            itemCount: sales.length,
-            separatorBuilder: (_, __) => const SizedBox(height: 8),
-            itemBuilder: (context, index) {
-              final sale = sales[index];
-              return SalesTile(sale: sale, onDelete: () => _deleteSale(sale));
-            },
-          );
-        },
-      ),
+    return ListView.separated(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+      itemCount: sales.length,
+      separatorBuilder: (_, __) => const SizedBox(height: 8),
+      itemBuilder: (context, index) {
+        final sale = sales[index];
+        return SalesTile(
+          sale: sale,
+          onDelete: () => _deleteSale(sale),
+          onTogglePaid: () => _togglePaid(sale),
+        );
+      },
     );
   }
 }
@@ -270,7 +385,11 @@ class _EmptyView extends StatelessWidget {
             Text(message, textAlign: TextAlign.center),
             if (actionLabel != null && onAction != null) ...[
               const SizedBox(height: 16),
-              FilledButton.icon(onPressed: onAction, icon: const Icon(Icons.add), label: Text(actionLabel!)),
+              FilledButton.icon(
+                onPressed: onAction,
+                icon: const Icon(Icons.add),
+                label: Text(actionLabel!),
+              ),
             ],
           ],
         ),
@@ -297,7 +416,11 @@ class _ErrorView extends StatelessWidget {
             const SizedBox(height: 12),
             Text(message, textAlign: TextAlign.center),
             const SizedBox(height: 16),
-            FilledButton.icon(onPressed: onRetry, icon: const Icon(Icons.refresh), label: const Text('Reintentar')),
+            FilledButton.icon(
+              onPressed: onRetry,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Reintentar'),
+            ),
           ],
         ),
       ),

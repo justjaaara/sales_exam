@@ -6,6 +6,7 @@ class SalesModel {
   final DateTime saleDate;
   final DateTime updatedAt;
   final bool pendingSync;
+  final bool isPaid;
 
   const SalesModel({
     this.id,
@@ -15,7 +16,10 @@ class SalesModel {
     required this.saleDate,
     required this.updatedAt,
     required this.pendingSync,
+    this.isPaid = false,
   });
+
+  String get statusText => isPaid ? 'Cobrado' : 'Pendiente por cobrar';
 
   SalesModel copyWith({
     int? id,
@@ -25,6 +29,7 @@ class SalesModel {
     DateTime? saleDate,
     DateTime? updatedAt,
     bool? pendingSync,
+    bool? isPaid,
   }) {
     return SalesModel(
       id: id ?? this.id,
@@ -34,6 +39,7 @@ class SalesModel {
       saleDate: saleDate ?? this.saleDate,
       updatedAt: updatedAt ?? this.updatedAt,
       pendingSync: pendingSync ?? this.pendingSync,
+      isPaid: isPaid ?? this.isPaid,
     );
   }
 
@@ -44,6 +50,7 @@ class SalesModel {
       'amount': amount,
       'saleDate': saleDate.toIso8601String(),
       'updatedAt': updatedAt.toIso8601String(),
+      'isPaid': isPaid,
     };
   }
 
@@ -56,6 +63,13 @@ class SalesModel {
       saleDate: DateTime.tryParse(map['saleDate'] as String? ?? '') ?? DateTime.now(),
       updatedAt: DateTime.tryParse(map['updatedAt'] as String? ?? '') ?? DateTime.now(),
       pendingSync: false,
+      isPaid: map['isPaid'] as bool? ?? false,
     );
+  }
+
+  Map<String, dynamic> toJson() => toFirestore();
+
+  factory SalesModel.fromJson(Map<String, dynamic> json, {required int id}) {
+    return SalesModel.fromFirestore(json, id: id);
   }
 }

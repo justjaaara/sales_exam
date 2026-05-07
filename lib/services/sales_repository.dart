@@ -1,4 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
+
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/sales_model.dart';
 import 'app_logger.dart';
@@ -8,27 +12,94 @@ class SalesRepository {
   final SalesRemoteService remoteService;
   final StreamController<List<SalesModel>> _salesController = StreamController<List<SalesModel>>.broadcast();
 
-  final List<SalesModel> _localSales = [];
+  List<SalesModel> _localSales = [];
+  Timer? _syncTimer;
+  bool _wasOffline = false;
+  Function()? onSyncComplete;
+  SharedPreferences? _prefs;
+  static const String _storageKey = 'sales_data';
+  bool _initialized = false;
 
   SalesRepository({
     required this.remoteService,
   });
 
-  Stream<List<SalesModel>> watchSales() {
-    AppLogger.debug('Escuchando ventas');
-    return _salesController.stream;
+  Future<void> init() async {
+    if (_initialized) return;
+    
+    _prefs = await SharedPreferences.getInstance();
+    _loadFromLocal();
+    _startSyncTimer();
+    _initialized = true;
+    AppLogger.info('Repository inicializado');
+  }
+
+  void _loadFromLocal() {
+    final jsonStr = _prefs?.getString(_storageKey);
+    if (jsonStr != null) {
+      try {
+        final List<dynamic> jsonList = json.decode(jsonStr);
+        _localSales = jsonList.map((item) => SalesModel.fromJson(item, id: item['id'] as int)).toList();
+        AppLogger.info('Cargadas ${_localSales.length} ventas desde local');
+      } catch (e) {
+        AppLogger.warning('Error cargando datos locales');
+        _localSales = [];
+      }
+    } else {
+      _localSales = [];
+    }
+    _notify();
+  }
+
+  Future<void> _saveToLocal() async {
+    final jsonStr = json.encode(_localSales.map((s) => {'id': s.id, ...s.toJson()}).toList());
+    await _prefs?.setString(_storageKey, jsonStr);
+  }
+
+  void _startSyncTimer() {
+    _syncTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      final results = await Connectivity().checkConnectivity();
+      final isConnected = results.isNotEmpty && !results.contains(ConnectivityResult.none);
+      
+      if (isConnected) {
+        AppLogger.info('Sync automático...');
+        _autoSync();
+      } else if (!isConnected) {
+        _wasOffline = true;
+      }
+    });
+  }
+
+  Future<void> _autoSync() async {
+    try {
+      await syncPendingSales();
+      await refreshFromRemote();
+      _notify();
+      onSyncComplete?.call();
+    } catch (e, st) {
+      AppLogger.warning('Auto sync falló (sin conexión)');
+    }
   }
 
   void _notify() {
     _salesController.add(List.from(_localSales));
   }
 
+  List<SalesModel> getSales() => List.from(_localSales);
+
   Future<void> loadInitialData() async {
+    await init();
     AppLogger.info('Cargando datos iniciales');
-    await refreshFromRemote();
+
+    try {
+      await refreshFromRemote();
+      await syncPendingSales();
+    } catch (e) {
+      AppLogger.warning('Sin conexión, trabajando offline');
+    }
   }
 
-  Future<void> addSale({
+  Future<bool> addSale({
     required String clientName,
     required String product,
     required double amount,
@@ -47,17 +118,20 @@ class SalesRepository {
     );
 
     _localSales.add(sale);
+    await _saveToLocal();
     _notify();
     AppLogger.info('Venta creada: ${sale.id}');
 
     try {
       await remoteService.upsertSale(sale);
       _updateSale(sale.copyWith(pendingSync: false));
+      await _saveToLocal();
       _notify();
       AppLogger.info('Venta sincronizada: ${sale.id}');
-    } catch (error, stackTrace) {
-      AppLogger.warning('Venta pendiente de sincronización');
-      AppLogger.error('Error sincronizando venta', error: error, stackTrace: stackTrace);
+      return true;
+    } catch (e) {
+      AppLogger.info('Venta guardada localmente, pendiente de sync: ${sale.id}');
+      return false;
     }
   }
 
@@ -66,17 +140,39 @@ class SalesRepository {
     if (idx >= 0) _localSales[idx] = updated;
   }
 
-  Future<void> deleteSale(SalesModel sale) async {
-    if (sale.id == null) return;
+  Future<bool> togglePaid(SalesModel sale) async {
+    if (sale.id == null) return false;
+    final updated = sale.copyWith(isPaid: !sale.isPaid, updatedAt: DateTime.now(), pendingSync: true);
+    _updateSale(updated);
+    await _saveToLocal();
+    _notify();
+    AppLogger.info('Estado actualizado: ${sale.id}, isPaid: ${updated.isPaid}');
+
+    try {
+      await remoteService.upsertSale(updated);
+      _updateSale(updated.copyWith(pendingSync: false));
+      await _saveToLocal();
+      _notify();
+      return true;
+    } catch (e) {
+      AppLogger.info('Estado guardado localmente, pendiente de sync');
+      return false;
+    }
+  }
+
+  Future<bool> deleteSale(SalesModel sale) async {
+    if (sale.id == null) return false;
     _localSales.removeWhere((s) => s.id == sale.id);
+    await _saveToLocal();
     _notify();
     AppLogger.info('Venta eliminada: ${sale.id}');
 
     try {
       await remoteService.deleteSale(sale.id!);
-    } catch (error, stackTrace) {
-      AppLogger.warning('Venta eliminada localmente');
-      AppLogger.error('Error eliminando venta', error: error, stackTrace: stackTrace);
+      return true;
+    } catch (e) {
+      AppLogger.info('Venta eliminada localmente, pendiente de sync');
+      return false;
     }
   }
 
@@ -87,15 +183,20 @@ class SalesRepository {
       for (final sale in remoteSales) {
         final idx = _localSales.indexWhere((s) => s.id == sale.id);
         if (idx >= 0) {
-          _localSales[idx] = sale;
+          final localSale = _localSales[idx];
+          // Only update if remote is newer and local is already synced
+          if (!localSale.pendingSync && sale.updatedAt.isAfter(localSale.updatedAt)) {
+            _localSales[idx] = sale;
+          }
         } else {
           _localSales.add(sale);
         }
       }
+      await _saveToLocal();
       _notify();
       AppLogger.info('Ventas desde Firebase: ${remoteSales.length}');
-    } catch (error, stackTrace) {
-      AppLogger.error('Error refrescando', error: error, stackTrace: stackTrace);
+    } catch (e) {
+      AppLogger.warning('Error refrescando, usando datos locales');
     }
   }
 
@@ -108,13 +209,20 @@ class SalesRepository {
         await remoteService.upsertSale(sale);
         _updateSale(sale.copyWith(pendingSync: false));
         AppLogger.info('Sincronizado: ${sale.id}');
-      } catch (error, stackTrace) {
-        AppLogger.error('Error sincronizando: ${sale.id}', error: error, stackTrace: stackTrace);
+      } catch (e) {
+        AppLogger.info('Sync pendiente: ${sale.id}');
       }
     }
+    await _saveToLocal();
+    _notify();
   }
 
   void simulatePermissionDenied() => remoteService.simulatePermissionDeniedOnce();
   void simulateNetworkError() => remoteService.simulateNetworkErrorOnce();
   void simulateUnexpectedError() => remoteService.simulateUnexpectedErrorOnce();
+
+  void dispose() {
+    _syncTimer?.cancel();
+    _salesController.close();
+  }
 }
