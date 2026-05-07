@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "370111494926",
+    "project_id": "salesmanagementfluttermovildem",
+    "storage_bucket": "salesmanagementfluttermovildem.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:370111494926:android:08acc2e91c3e2e4f06b55f",
+        "android_client_info": {
+          "package_name": "com.example.sales_exam"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDm32bQjNf8_Q0-Y2JlvjiVlB7zhabbqSs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:370111494926:android:1276c0868923ce0a06b55f",
+        "android_client_info": {
+          "package_name": "com.example.sales_management_examn"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDm32bQjNf8_Q0-Y2JlvjiVlB7zhabbqSs"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
